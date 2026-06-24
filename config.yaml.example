@@ -1,0 +1,76 @@
+ssh:
+  host: "prod-server.local"
+  port: 22
+  user: "backup-user"
+  key_path: "/home/backup-user/.ssh/id_rsa"
+
+backup:
+  local_dir: "/path/to/backup/destination"
+  remote_temp_dir: "/tmp"
+  retention_days: 7
+  log_file: "/var/log/backup-mayster/backup-mayster.log"
+  sftp_max_retries: 3
+  sftp_retry_delay: 5
+
+metrics:
+  enabled: false # Set to true to write JSON stats for the exporter
+  stats_file: "/var/log/backup-mayster/backup-mayster-stats.json"
+
+discord:
+  webhook_url: "https://discord.com/api/webhooks/YOUR_DISCORD_WEBHOOK_HERE"
+  enabled: false # Set to true and fill webhook_url to enable
+
+apps:
+  - name: "bao"
+    path: "/opt/containers/bao"
+    pause_containers:
+      - "bao"
+
+  - name: "npm"
+    path: "/opt/containers/npm"
+    pause_containers:
+      - "npm-app"
+    pre_backup_commands:
+      # Example of dumping MariaDB database before creating the archive
+      - "sudo podman exec npm-db sh -c 'exec mariadb-dump -uroot -p\"$MYSQL_ROOT_PASSWORD\" --all-databases' > /opt/containers/npm/npm_db_backup.sql"
+    post_backup_commands:
+      - "sudo rm -f /opt/containers/npm/npm_db_backup.sql"
+
+  - name: "monitoring"
+    path: "/opt/containers/monitoring"
+    pause_containers:
+      - "prometheus"
+      - "alertmanager"
+      - "grafana"
+      - "loki"
+      - "promtail"
+
+  - name: "obsidian-couchdb"
+    path: "/opt/containers/obsidian-couchdb"
+    pause_containers:
+      - "obsidian-couchdb"
+
+  - name: "vaultwarden"
+    path: "/opt/containers/vaultwarden"
+    pause_containers:
+      - "vaultwarden"
+
+  - name: "yopass"
+    path: "/opt/containers/yopass"
+    pause_containers:
+      - "yopass-app"
+      - "yopass-redis"
+
+  - name: "ts6-server"
+    path: "/opt/containers/ts6-server"
+    pause_containers:
+      - "ts6-server"
+
+  - name: "propaganda-bot"
+    path: "/opt/containers/propaganda-bot"
+    pause_containers:
+      - "propaganda-bot"
+
+  - name: "owczarczyk-it"
+    path: "/opt/containers/owczarczyk-it"
+    # No containers to pause if stateless
