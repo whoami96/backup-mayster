@@ -25,6 +25,7 @@ share/python-wheels/
 .installed.cfg
 *.egg
 MANIFEST
+.venv/
 
 # PyInstaller
 #   Usually these files are written by a python script from a template
@@ -216,3 +217,11 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# backup-mayster configuration, logs & locks
+config.yaml
+backup-mayster.lock
+backup-mayster-stats.json
+*.log
+*.tmp
+
