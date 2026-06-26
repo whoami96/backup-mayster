@@ -76,6 +76,8 @@ backup:
   log_file: "/var/log/backup-mayster/backup-mayster-stats.log"
   sftp_max_retries: 3
   sftp_retry_delay: 5
+  container_engine: "podman" # Options: "podman" or "docker" (defaults to "podman")
+  server_name: "prod-server"  # Unique label to identify this server in metrics
 
 metrics:
   enabled: true
@@ -88,6 +90,7 @@ discord:
 apps:
   - name: "my-app"
     path: "/opt/containers/my-app"
+    container_engine: "docker" # Optional: Override engine per app ("docker" or "podman")
     pause_containers:
       - "my-app-container"
     pre_backup_commands:

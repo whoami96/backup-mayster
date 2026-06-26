@@ -74,6 +74,18 @@ def validate_config(config):
         logger.error("Configuration error: 'backup.local_dir' is required.")
         sys.exit(1)
         return
+    if backup_cfg.get('container_engine') is not None:
+        engine = backup_cfg.get('container_engine')
+        if engine not in ['podman', 'docker']:
+            logger.error(f"Configuration error: 'backup.container_engine' must be 'podman' or 'docker'. Got: '{engine}'")
+            sys.exit(1)
+            return
+    if backup_cfg.get('server_name') is not None:
+        sname = backup_cfg.get('server_name')
+        if not isinstance(sname, str) or not sname:
+            logger.error("Configuration error: 'backup.server_name' must be a non-empty string.")
+            sys.exit(1)
+            return
         
     apps = config.get('apps')
     if apps is None:
@@ -102,6 +114,12 @@ def validate_config(config):
             logger.error(f"Configuration error: app '{app.get('name')}' is missing 'path'.")
             sys.exit(1)
             return
+        if app.get('container_engine') is not None:
+            app_eng = app.get('container_engine')
+            if app_eng not in ['podman', 'docker']:
+                logger.error(f"Configuration error: app '{app.get('name')}' has invalid 'container_engine': '{app_eng}'. Must be 'podman' or 'docker'.")
+                sys.exit(1)
+                return
             
     metrics_cfg = config.get('metrics')
     if metrics_cfg is not None:
@@ -229,28 +247,49 @@ def run_retention(local_dir, app_name, retention_days):
         logger.error(f"Error executing retention policy for {app_name}: {e}")
         return []
 
-def write_stats_json(stats_file_path, stats, all_success):
-    """Writes backup statistics to a JSON file for the exporter."""
-    prev_success_times = {}
-    if os.path.exists(stats_file_path):
-        try:
-            with open(stats_file_path, 'r') as f:
-                old_data = json.load(f)
-                for app in old_data.get('apps', []):
-                    prev_success_times[app['name']] = app.get('last_success_timestamp_seconds', 0.0)
-        except Exception as parse_err:
-            logger.warning(f"Could not parse previous stats JSON file: {parse_err}")
+def write_stats_json(stats_file_path, stats, all_success, server_name):
+    """Writes backup statistics to a JSON file for the exporter, merging with other servers' stats."""
+    # Acquire flock on lock file to prevent race conditions during read-modify-write
+    lock_file = None
+    try:
+        lock_file_path = stats_file_path + ".lock"
+        lock_dir = os.path.dirname(lock_file_path)
+        if lock_dir:
+            os.makedirs(lock_dir, exist_ok=True)
+        lock_file = open(lock_file_path, 'w')
+        fcntl.flock(lock_file, fcntl.LOCK_EX) # blocks until lock is acquired
+    except Exception as le:
+        logger.warning(f"Could not acquire lock on stats file: {le}")
 
     try:
-        stats_dir = os.path.dirname(stats_file_path)
-        if stats_dir:
-            os.makedirs(stats_dir, exist_ok=True)
-            
+        # Default structure for the new format
+        data = {"servers": {}}
+        
+        if os.path.exists(stats_file_path):
+            try:
+                with open(stats_file_path, 'r') as f:
+                    existing = json.load(f)
+                    if isinstance(existing, dict):
+                        if "servers" in existing:
+                            data = existing
+                        elif "apps" in existing:
+                            # Migrate old format to new format
+                            data = {"servers": {"default": existing}}
+            except Exception as parse_err:
+                logger.warning(f"Could not parse previous stats JSON file: {parse_err}")
+
+        # Now find the previous success timestamps for the current server
+        prev_success_times = {}
+        server_data = data["servers"].get(server_name, {})
+        if isinstance(server_data, dict):
+            for app in server_data.get('apps', []):
+                prev_success_times[app['name']] = app.get('last_success_timestamp_seconds', 0.0)
+
+        # Build the updated server stats
         current_time = time.time()
         apps_data = []
         for stat in stats:
             app_name = stat['name']
-            
             try:
                 dur_val = float(stat['duration'].replace('s', ''))
             except ValueError:
@@ -268,21 +307,32 @@ def write_stats_json(stats_file_path, stats, all_success):
                 "size_bytes": stat.get('size_bytes', 0),
                 "last_success_timestamp_seconds": last_success
             })
-            
-        payload = {
+
+        data["servers"][server_name] = {
             "last_run_timestamp_seconds": current_time,
             "success": 1 if all_success else 0,
             "apps": apps_data
         }
-        
+
+        stats_dir = os.path.dirname(stats_file_path)
+        if stats_dir:
+            os.makedirs(stats_dir, exist_ok=True)
+            
         temp_path = stats_file_path + ".tmp"
         with open(temp_path, 'w') as f:
-            json.dump(payload, f, indent=2)
+            json.dump(data, f, indent=2)
             
         os.replace(temp_path, stats_file_path)
-        logger.info(f"Backup stats JSON written to {stats_file_path}")
+        logger.info(f"Backup stats JSON written to {stats_file_path} for server '{server_name}'")
     except Exception as e:
         logger.error(f"Failed to write stats JSON: {e}")
+    finally:
+        if lock_file:
+            try:
+                fcntl.flock(lock_file, fcntl.LOCK_UN)
+                lock_file.close()
+            except Exception:
+                pass
 
 ASCII_ART = r"""
  _                _               ___  ___                  _            
@@ -317,8 +367,14 @@ def main():
 
     script_dir = os.path.dirname(os.path.abspath(__file__))
     
-    # Acquire flock to prevent concurrent executions
-    lock_file_path = os.path.join(script_dir, 'backup-mayster.lock')
+    config_path = args.config
+    if not config_path:
+        config_path = os.path.join(script_dir, 'config.yaml')
+        
+    config_name = os.path.basename(config_path).replace('.yaml', '').replace('.yml', '')
+    
+    # Acquire flock to prevent concurrent executions of the same configuration
+    lock_file_path = os.path.join(script_dir, f'backup-mayster-{config_name}.lock')
     try:
         lock_file_obj = open(lock_file_path, 'w')
     except Exception as e:
@@ -329,13 +385,9 @@ def main():
     try:
         fcntl.flock(lock_file_obj, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except IOError:
-        logger.error("Another instance of backup-mayster is already running (locked). Exiting.")
+        logger.error(f"Another instance of backup-mayster for config '{config_name}' is already running (locked). Exiting.")
         sys.exit(1)
 
-    config_path = args.config
-    if not config_path:
-        config_path = os.path.join(script_dir, 'config.yaml')
-    
     config = load_config(config_path)
     validate_config(config)
     
@@ -343,6 +395,7 @@ def main():
     backup_cfg = config.get('backup', {})
     discord_cfg = config.get('discord', {})
     apps = config.get('apps', [])
+    global_engine = backup_cfg.get('container_engine', 'podman')
     
     # Filter apps if a specific one was requested
     if args.app:
@@ -454,6 +507,7 @@ def main():
     for app in apps:
         app_name = app.get('name')
         app_path = app.get('path')
+        app_engine = app.get('container_engine', global_engine)
         pause_containers = app.get('pause_containers', [])
         pre_commands = app.get('pre_backup_commands', [])
         post_commands = app.get('post_backup_commands', [])
@@ -491,7 +545,7 @@ def main():
                         logger.info(f"[DRY RUN] Would pause container: {container}")
                         code, out, err = 0, "", ""
                     else:
-                        code, out, err = run_ssh_command(ssh_client, f"sudo podman pause {container}")
+                        code, out, err = run_ssh_command(ssh_client, f"sudo {app_engine} pause {container}")
                     if code != 0:
                         logger.warning(f"Could not pause container {container}: {err}. Continuing anyway...")
                     else:
@@ -524,7 +578,7 @@ def main():
                         logger.info(f"[DRY RUN] Would unpause container: {container}")
                         code, out, err = 0, "", ""
                     else:
-                        code, out, err = run_ssh_command(ssh_client, f"sudo podman unpause {container}")
+                        code, out, err = run_ssh_command(ssh_client, f"sudo {app_engine} unpause {container}")
                     if code != 0:
                         logger.error(f"CRITICAL: Failed to unpause container {container}! Manual intervention might be required: {err}")
             
@@ -619,7 +673,10 @@ def main():
     # Write JSON metrics if configured
     metrics_cfg = config.get('metrics', {})
     if metrics_cfg.get('enabled') and metrics_cfg.get('stats_file'):
-        write_stats_json(metrics_cfg.get('stats_file'), stats, all_success)
+        server_name = backup_cfg.get('server_name')
+        if not server_name:
+            server_name = ssh_cfg.get('host', 'unknown-server')
+        write_stats_json(metrics_cfg.get('stats_file'), stats, all_success, server_name)
         
     logger.info("Backup script run finished.")
     if not all_success:

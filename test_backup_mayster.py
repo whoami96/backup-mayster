@@ -151,11 +151,11 @@ class TestBackupMayster(unittest.TestCase):
             {"name": "npm", "status": "FAILED", "size": "--", "size_bytes": 0, "duration": "1.2s"}
         ]
         
-        backup_mayster.write_stats_json("/var/log/backup.json", stats, False)
+        backup_mayster.write_stats_json("/var/log/backup.json", stats, False, "default")
         
         # Verify replace and directories are checked
         mock_replace.assert_called_once_with("/var/log/backup.json.tmp", "/var/log/backup.json")
-        mock_makedirs.assert_called_once_with("/var/log", exist_ok=True)
+        mock_makedirs.assert_any_call("/var/log", exist_ok=True)
         
         # Inspect what was written
         written_content = "".join(call.args[0] for call in file_handle_write.write.call_args_list)
@@ -164,10 +164,15 @@ class TestBackupMayster(unittest.TestCase):
         import json as test_json
         written_data = test_json.loads(written_content)
         
-        self.assertEqual(written_data['success'], 0)
-        self.assertEqual(written_data['last_run_timestamp_seconds'], 1719144000.0)
+        # Assertions on nested server data
+        self.assertIn('servers', written_data)
+        self.assertIn('default', written_data['servers'])
+        server_data = written_data['servers']['default']
         
-        apps_dict = {app['name']: app for app in written_data['apps']}
+        self.assertEqual(server_data['success'], 0)
+        self.assertEqual(server_data['last_run_timestamp_seconds'], 1719144000.0)
+        
+        apps_dict = {app['name']: app for app in server_data['apps']}
         
         # Check bao (Success in current run)
         self.assertEqual(apps_dict['bao']['status'], 'OK')
@@ -219,6 +224,35 @@ class TestBackupMayster(unittest.TestCase):
             "apps": [{"name": "bao"}]
         }
         backup_mayster.validate_config(invalid_cfg_3)
+        mock_exit.assert_called_with(1)
+        mock_exit.reset_mock()
+
+        # 5. Valid config - container_engines
+        valid_cfg_engines = {
+            "ssh": {"host": "prod-test", "user": "mayster"},
+            "backup": {"local_dir": "/backups", "container_engine": "docker"},
+            "apps": [{"name": "bao", "path": "/opt/bao", "container_engine": "podman"}]
+        }
+        backup_mayster.validate_config(valid_cfg_engines)
+        mock_exit.assert_not_called()
+
+        # 6. Invalid config - invalid global container_engine
+        invalid_cfg_engines_global = {
+            "ssh": {"host": "prod-test", "user": "mayster"},
+            "backup": {"local_dir": "/backups", "container_engine": "invalid-engine"},
+            "apps": [{"name": "bao", "path": "/opt/bao"}]
+        }
+        backup_mayster.validate_config(invalid_cfg_engines_global)
+        mock_exit.assert_called_with(1)
+        mock_exit.reset_mock()
+
+        # 7. Invalid config - invalid app container_engine
+        invalid_cfg_engines_app = {
+            "ssh": {"host": "prod-test", "user": "mayster"},
+            "backup": {"local_dir": "/backups"},
+            "apps": [{"name": "bao", "path": "/opt/bao", "container_engine": "invalid-engine"}]
+        }
+        backup_mayster.validate_config(invalid_cfg_engines_app)
         mock_exit.assert_called_with(1)
         mock_exit.reset_mock()
 
