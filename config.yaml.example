@@ -1,10 +1,14 @@
+# backup-mayster — Example Configuration File
+# Copy this to config.yaml and edit it for your environment
+
 ssh:
-  host: "prod-server.local"
+  host: "prod-server.local" # Use "127.0.0.1" for local backups on the same machine
   port: 22
   user: "backup-user"
   key_path: "/home/backup-user/.ssh/id_rsa"
 
 backup:
+  # Destination directory on the backup server (NAS) where archives will be stored
   local_dir: "/path/to/backup/destination"
   remote_temp_dir: "/tmp"
   retention_days: 7
@@ -12,7 +16,7 @@ backup:
   sftp_max_retries: 3
   sftp_retry_delay: 5
   container_engine: "podman" # Options: "podman" or "docker" (defaults to "podman")
-  server_name: "prod-pdm-node-01" # Unique name to distinguish metrics in Prometheus
+  server_name: "prod-server"  # Unique label to identify this server in Prometheus metrics
 
 metrics:
   enabled: false # Set to true to write JSON stats for the exporter
@@ -23,21 +27,29 @@ discord:
   enabled: false # Set to true and fill webhook_url to enable
 
 apps:
+  # Example 1: Simple stateless container backup
   - name: "bao"
     path: "/opt/containers/bao"
     pause_containers:
       - "bao"
 
+  # Example 2: Container backup with database dump (utilizing a safe temporary path for permission handling)
   - name: "npm"
     path: "/opt/containers/npm"
     pause_containers:
       - "npm-app"
     pre_backup_commands:
-      # Example of dumping MariaDB database before creating the archive
-      - "sudo podman exec npm-db sh -c 'exec mariadb-dump -uroot -p\"$MYSQL_ROOT_PASSWORD\" --all-databases' > /opt/containers/npm/npm_db_backup.sql"
+      # Step A: Dump MariaDB database to /tmp (where backup-user has full write access)
+      - "podman exec npm-db sh -c 'exec mariadb-dump -uroot -p\"$MYSQL_ROOT_PASSWORD\" --all-databases' > /tmp/npm_db_backup.sql"
+      # Step B: Move the SQL dump to the app directory using sudo
+      - "sudo mv /tmp/npm_db_backup.sql /opt/containers/npm/npm_db_backup.sql"
+      # Step C (Optional): Copy compose file to data folder so they are archived together
+      - "sudo cp /docker-compose/npm/docker-compose.yml /opt/containers/npm/docker-compose.yml"
     post_backup_commands:
       - "sudo rm -f /opt/containers/npm/npm_db_backup.sql"
+      - "sudo rm -f /opt/containers/npm/docker-compose.yml"
 
+  # Example 3: Stack backup with multiple containers
   - name: "monitoring"
     path: "/opt/containers/monitoring"
     pause_containers:
@@ -47,33 +59,9 @@ apps:
       - "loki"
       - "promtail"
 
-  - name: "obsidian-couchdb"
-    path: "/opt/containers/obsidian-couchdb"
-    pause_containers:
-      - "obsidian-couchdb"
-
+  # Example 4: App using a different container engine override (Docker)
   - name: "vaultwarden"
     path: "/opt/containers/vaultwarden"
-    container_engine: "docker" # Optional override if this specific app uses docker instead of global setting
+    container_engine: "docker" # Overrides the global setting for this app
     pause_containers:
       - "vaultwarden"
-
-  - name: "yopass"
-    path: "/opt/containers/yopass"
-    pause_containers:
-      - "yopass-app"
-      - "yopass-redis"
-
-  - name: "ts6-server"
-    path: "/opt/containers/ts6-server"
-    pause_containers:
-      - "ts6-server"
-
-  - name: "propaganda-bot"
-    path: "/opt/containers/propaganda-bot"
-    pause_containers:
-      - "propaganda-bot"
-
-  - name: "owczarczyk-it"
-    path: "/opt/containers/owczarczyk-it"
-    # No containers to pause if stateless
