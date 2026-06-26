@@ -12,6 +12,7 @@ backup:
   sftp_max_retries: 3
   sftp_retry_delay: 5
   container_engine: "podman" # Options: "podman" or "docker" (defaults to "podman")
+  server_name: "prod-pdm-node-01" # Unique name to distinguish metrics in Prometheus
 
 metrics:
   enabled: false # Set to true to write JSON stats for the exporter

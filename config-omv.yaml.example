@@ -16,6 +16,7 @@ backup:
   sftp_max_retries: 3
   sftp_retry_delay: 5
   container_engine: "docker" # Using Docker on OMV
+  server_name: "omv-local"   # Unique name to distinguish metrics in Prometheus
 
 metrics:
   enabled: true

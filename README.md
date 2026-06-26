@@ -77,6 +77,7 @@ backup:
   sftp_max_retries: 3
   sftp_retry_delay: 5
   container_engine: "podman" # Options: "podman" or "docker" (defaults to "podman")
+  server_name: "prod-server"  # Unique label to identify this server in metrics
 
 metrics:
   enabled: true
