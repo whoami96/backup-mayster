@@ -74,6 +74,12 @@ def validate_config(config):
         logger.error("Configuration error: 'backup.local_dir' is required.")
         sys.exit(1)
         return
+    if backup_cfg.get('container_engine') is not None:
+        engine = backup_cfg.get('container_engine')
+        if engine not in ['podman', 'docker']:
+            logger.error(f"Configuration error: 'backup.container_engine' must be 'podman' or 'docker'. Got: '{engine}'")
+            sys.exit(1)
+            return
         
     apps = config.get('apps')
     if apps is None:
@@ -102,6 +108,12 @@ def validate_config(config):
             logger.error(f"Configuration error: app '{app.get('name')}' is missing 'path'.")
             sys.exit(1)
             return
+        if app.get('container_engine') is not None:
+            app_eng = app.get('container_engine')
+            if app_eng not in ['podman', 'docker']:
+                logger.error(f"Configuration error: app '{app.get('name')}' has invalid 'container_engine': '{app_eng}'. Must be 'podman' or 'docker'.")
+                sys.exit(1)
+                return
             
     metrics_cfg = config.get('metrics')
     if metrics_cfg is not None:
@@ -343,6 +355,7 @@ def main():
     backup_cfg = config.get('backup', {})
     discord_cfg = config.get('discord', {})
     apps = config.get('apps', [])
+    global_engine = backup_cfg.get('container_engine', 'podman')
     
     # Filter apps if a specific one was requested
     if args.app:
@@ -454,6 +467,7 @@ def main():
     for app in apps:
         app_name = app.get('name')
         app_path = app.get('path')
+        app_engine = app.get('container_engine', global_engine)
         pause_containers = app.get('pause_containers', [])
         pre_commands = app.get('pre_backup_commands', [])
         post_commands = app.get('post_backup_commands', [])
@@ -491,7 +505,7 @@ def main():
                         logger.info(f"[DRY RUN] Would pause container: {container}")
                         code, out, err = 0, "", ""
                     else:
-                        code, out, err = run_ssh_command(ssh_client, f"sudo podman pause {container}")
+                        code, out, err = run_ssh_command(ssh_client, f"sudo {app_engine} pause {container}")
                     if code != 0:
                         logger.warning(f"Could not pause container {container}: {err}. Continuing anyway...")
                     else:
@@ -524,7 +538,7 @@ def main():
                         logger.info(f"[DRY RUN] Would unpause container: {container}")
                         code, out, err = 0, "", ""
                     else:
-                        code, out, err = run_ssh_command(ssh_client, f"sudo podman unpause {container}")
+                        code, out, err = run_ssh_command(ssh_client, f"sudo {app_engine} unpause {container}")
                     if code != 0:
                         logger.error(f"CRITICAL: Failed to unpause container {container}! Manual intervention might be required: {err}")
             

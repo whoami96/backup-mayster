@@ -222,5 +222,34 @@ class TestBackupMayster(unittest.TestCase):
         mock_exit.assert_called_with(1)
         mock_exit.reset_mock()
 
+        # 5. Valid config - container_engines
+        valid_cfg_engines = {
+            "ssh": {"host": "prod-test", "user": "mayster"},
+            "backup": {"local_dir": "/backups", "container_engine": "docker"},
+            "apps": [{"name": "bao", "path": "/opt/bao", "container_engine": "podman"}]
+        }
+        backup_mayster.validate_config(valid_cfg_engines)
+        mock_exit.assert_not_called()
+
+        # 6. Invalid config - invalid global container_engine
+        invalid_cfg_engines_global = {
+            "ssh": {"host": "prod-test", "user": "mayster"},
+            "backup": {"local_dir": "/backups", "container_engine": "invalid-engine"},
+            "apps": [{"name": "bao", "path": "/opt/bao"}]
+        }
+        backup_mayster.validate_config(invalid_cfg_engines_global)
+        mock_exit.assert_called_with(1)
+        mock_exit.reset_mock()
+
+        # 7. Invalid config - invalid app container_engine
+        invalid_cfg_engines_app = {
+            "ssh": {"host": "prod-test", "user": "mayster"},
+            "backup": {"local_dir": "/backups"},
+            "apps": [{"name": "bao", "path": "/opt/bao", "container_engine": "invalid-engine"}]
+        }
+        backup_mayster.validate_config(invalid_cfg_engines_app)
+        mock_exit.assert_called_with(1)
+        mock_exit.reset_mock()
+
 if __name__ == "__main__":
     unittest.main()

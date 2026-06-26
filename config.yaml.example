@@ -11,6 +11,7 @@ backup:
   log_file: "/var/log/backup-mayster/backup-mayster.log"
   sftp_max_retries: 3
   sftp_retry_delay: 5
+  container_engine: "podman" # Options: "podman" or "docker" (defaults to "podman")
 
 metrics:
   enabled: false # Set to true to write JSON stats for the exporter
@@ -52,6 +53,7 @@ apps:
 
   - name: "vaultwarden"
     path: "/opt/containers/vaultwarden"
+    container_engine: "docker" # Optional override if this specific app uses docker instead of global setting
     pause_containers:
       - "vaultwarden"
 
