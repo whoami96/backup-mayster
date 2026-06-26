@@ -34,9 +34,9 @@ apps:
       - "bao"
     pre_backup_commands:
       # Copy compose file to data folder so they are archived together
-      - "cp /docker-compose/bao/docker-compose.yml /docker-data/bao/docker-compose.yml"
+      - "sudo cp /docker-compose/bao/docker-compose.yml /docker-data/bao/docker-compose.yml"
     post_backup_commands:
-      - "rm -f /docker-data/bao/docker-compose.yml"
+      - "sudo rm -f /docker-data/bao/docker-compose.yml"
 
   # 2. MinIO
   - name: "minio"
@@ -77,13 +77,15 @@ apps:
       # Pause MariaDB after dumping or keep it running to dump, then pause.
       # Since we dump db before pause, we keep it active.
     pre_backup_commands:
-      # Step A: Dump Nextcloud Database using docker exec
-      - "docker exec nextcloud-mariadb sh -c 'exec mariadb-dump -uroot -p\"$MYSQL_ROOT_PASSWORD\" --all-databases' > /docker-data/nextcloud/nextcloud_db_backup.sql"
-      # Step B: Copy compose file
-      - "cp /docker-compose/nextcloud/docker-compose.yml /docker-data/nextcloud/docker-compose.yml"
+      # Step A: Dump Nextcloud Database to /tmp (since /docker-data/nextcloud is owned by www-data)
+      - "docker exec nextcloud-mariadb sh -c 'exec mariadb-dump -uroot -p\"$MYSQL_ROOT_PASSWORD\" --all-databases' > /tmp/nextcloud_db_backup.sql"
+      # Step B: Move it to the nextcloud data folder with sudo
+      - "sudo mv /tmp/nextcloud_db_backup.sql /docker-data/nextcloud/nextcloud_db_backup.sql"
+      # Step C: Copy compose file
+      - "sudo cp /docker-compose/nextcloud/docker-compose.yml /docker-data/nextcloud/docker-compose.yml"
     post_backup_commands:
-      - "rm -f /docker-data/nextcloud/nextcloud_db_backup.sql"
-      - "rm -f /docker-data/nextcloud/docker-compose.yml"
+      - "sudo rm -f /docker-data/nextcloud/nextcloud_db_backup.sql"
+      - "sudo rm -f /docker-data/nextcloud/docker-compose.yml"
 
   # 6. Monitoring - Prometheus Config & Data
   - name: "monitoring-prometheus"
