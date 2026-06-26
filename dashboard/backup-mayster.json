@@ -106,7 +106,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "backup_mayster_success",
+          "expr": "backup_mayster_success{server=~\"$server\"}",
           "instant": true,
           "range": false,
           "refId": "A"
@@ -167,7 +167,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "backup_mayster_last_run_timestamp_seconds * 1000",
+          "expr": "backup_mayster_last_run_timestamp_seconds{server=~\"$server\"} * 1000",
           "instant": true,
           "range": false,
           "refId": "A"
@@ -229,7 +229,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "count(backup_mayster_app_success)",
+          "expr": "count(backup_mayster_app_success{server=~\"$server\"})",
           "instant": true,
           "range": false,
           "refId": "A"
@@ -379,7 +379,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "backup_mayster_app_success",
+          "expr": "backup_mayster_app_success{server=~\"$server\"}",
           "format": "table",
           "hide": false,
           "instant": true,
@@ -393,7 +393,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "backup_mayster_app_duration_seconds",
+          "expr": "backup_mayster_app_duration_seconds{server=~\"$server\"}",
           "format": "table",
           "hide": false,
           "instant": true,
@@ -407,7 +407,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "backup_mayster_app_backup_size_bytes",
+          "expr": "backup_mayster_app_backup_size_bytes{server=~\"$server\"}",
           "format": "table",
           "hide": false,
           "instant": true,
@@ -421,7 +421,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "backup_mayster_app_last_success_timestamp_seconds * 1000",
+          "expr": "backup_mayster_app_last_success_timestamp_seconds{server=~\"$server\"} * 1000",
           "format": "table",
           "hide": false,
           "instant": true,
@@ -458,7 +458,11 @@
               "__name__": true,
               "__name__ 1": true,
               "__name__ 2": true,
-              "__name__ 3": true
+              "__name__ 3": true,
+              "server 1": true,
+              "server 2": true,
+              "server 3": true,
+              "server": false
             },
             "indexByName": {},
             "renameByName": {
@@ -466,7 +470,8 @@
               "Value #A": "Status",
               "Value #B": "Duration",
               "Value #C": "Size",
-              "Value #D": "Last Success"
+              "Value #D": "Last Success",
+              "server": "Server"
             }
           }
         }
@@ -537,9 +542,9 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "backup_mayster_app_backup_size_bytes",
+          "expr": "backup_mayster_app_backup_size_bytes{server=~\"$server\"}",
           "instant": true,
-          "legendFormat": "{{app}}",
+          "legendFormat": "{{server}} - {{app}}",
           "range": false,
           "refId": "A"
         }
@@ -599,9 +604,9 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "backup_mayster_app_duration_seconds",
+          "expr": "backup_mayster_app_duration_seconds{server=~\"$server\"}",
           "instant": true,
-          "legendFormat": "{{app}}",
+          "legendFormat": "{{server}} - {{app}}",
           "range": false,
           "refId": "A"
         }
@@ -631,6 +636,30 @@
         "regex": "",
         "skipUrlSync": false,
         "type": "datasource"
+      },
+      {
+        "current": {},
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${datasource}"
+        },
+        "definition": "label_values(backup_mayster_success, server)",
+        "hide": 0,
+        "includeAll": true,
+        "multi": false,
+        "name": "server",
+        "options": [],
+        "query": {
+          "query": "label_values(backup_mayster_success, server)",
+          "refId": "StandardVariableQuery"
+        },
+        "refresh": 1,
+        "regex": "",
+        "skipUrlSync": false,
+        "sort": 1,
+        "type": "query",
+        "allValue": ".*",
+        "label": "Server"
       }
     ]
   },
