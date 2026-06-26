@@ -249,59 +249,71 @@ def run_retention(local_dir, app_name, retention_days):
 
 def write_stats_json(stats_file_path, stats, all_success, server_name):
     """Writes backup statistics to a JSON file for the exporter, merging with other servers' stats."""
-    # Default structure for the new format
-    data = {"servers": {}}
-    
-    if os.path.exists(stats_file_path):
-        try:
-            with open(stats_file_path, 'r') as f:
-                existing = json.load(f)
-                if isinstance(existing, dict):
-                    if "servers" in existing:
-                        data = existing
-                    elif "apps" in existing:
-                        # Migrate old format to new format
-                        data = {"servers": {"default": existing}}
-        except Exception as parse_err:
-            logger.warning(f"Could not parse previous stats JSON file: {parse_err}")
-
-    # Now find the previous success timestamps for the current server
-    prev_success_times = {}
-    server_data = data["servers"].get(server_name, {})
-    if isinstance(server_data, dict):
-        for app in server_data.get('apps', []):
-            prev_success_times[app['name']] = app.get('last_success_timestamp_seconds', 0.0)
-
-    # Build the updated server stats
-    current_time = time.time()
-    apps_data = []
-    for stat in stats:
-        app_name = stat['name']
-        try:
-            dur_val = float(stat['duration'].replace('s', ''))
-        except ValueError:
-            dur_val = 0.0
-            
-        if stat['status'] == "OK":
-            last_success = current_time
-        else:
-            last_success = prev_success_times.get(app_name, 0.0)
-            
-        apps_data.append({
-            "name": app_name,
-            "status": stat['status'],
-            "duration_seconds": dur_val,
-            "size_bytes": stat.get('size_bytes', 0),
-            "last_success_timestamp_seconds": last_success
-        })
-
-    data["servers"][server_name] = {
-        "last_run_timestamp_seconds": current_time,
-        "success": 1 if all_success else 0,
-        "apps": apps_data
-    }
+    # Acquire flock on lock file to prevent race conditions during read-modify-write
+    lock_file = None
+    try:
+        lock_file_path = stats_file_path + ".lock"
+        lock_dir = os.path.dirname(lock_file_path)
+        if lock_dir:
+            os.makedirs(lock_dir, exist_ok=True)
+        lock_file = open(lock_file_path, 'w')
+        fcntl.flock(lock_file, fcntl.LOCK_EX) # blocks until lock is acquired
+    except Exception as le:
+        logger.warning(f"Could not acquire lock on stats file: {le}")
 
     try:
+        # Default structure for the new format
+        data = {"servers": {}}
+        
+        if os.path.exists(stats_file_path):
+            try:
+                with open(stats_file_path, 'r') as f:
+                    existing = json.load(f)
+                    if isinstance(existing, dict):
+                        if "servers" in existing:
+                            data = existing
+                        elif "apps" in existing:
+                            # Migrate old format to new format
+                            data = {"servers": {"default": existing}}
+            except Exception as parse_err:
+                logger.warning(f"Could not parse previous stats JSON file: {parse_err}")
+
+        # Now find the previous success timestamps for the current server
+        prev_success_times = {}
+        server_data = data["servers"].get(server_name, {})
+        if isinstance(server_data, dict):
+            for app in server_data.get('apps', []):
+                prev_success_times[app['name']] = app.get('last_success_timestamp_seconds', 0.0)
+
+        # Build the updated server stats
+        current_time = time.time()
+        apps_data = []
+        for stat in stats:
+            app_name = stat['name']
+            try:
+                dur_val = float(stat['duration'].replace('s', ''))
+            except ValueError:
+                dur_val = 0.0
+                
+            if stat['status'] == "OK":
+                last_success = current_time
+            else:
+                last_success = prev_success_times.get(app_name, 0.0)
+                
+            apps_data.append({
+                "name": app_name,
+                "status": stat['status'],
+                "duration_seconds": dur_val,
+                "size_bytes": stat.get('size_bytes', 0),
+                "last_success_timestamp_seconds": last_success
+            })
+
+        data["servers"][server_name] = {
+            "last_run_timestamp_seconds": current_time,
+            "success": 1 if all_success else 0,
+            "apps": apps_data
+        }
+
         stats_dir = os.path.dirname(stats_file_path)
         if stats_dir:
             os.makedirs(stats_dir, exist_ok=True)
@@ -314,6 +326,13 @@ def write_stats_json(stats_file_path, stats, all_success, server_name):
         logger.info(f"Backup stats JSON written to {stats_file_path} for server '{server_name}'")
     except Exception as e:
         logger.error(f"Failed to write stats JSON: {e}")
+    finally:
+        if lock_file:
+            try:
+                fcntl.flock(lock_file, fcntl.LOCK_UN)
+                lock_file.close()
+            except Exception:
+                pass
 
 ASCII_ART = r"""
  _                _               ___  ___                  _            
@@ -348,8 +367,14 @@ def main():
 
     script_dir = os.path.dirname(os.path.abspath(__file__))
     
-    # Acquire flock to prevent concurrent executions
-    lock_file_path = os.path.join(script_dir, 'backup-mayster.lock')
+    config_path = args.config
+    if not config_path:
+        config_path = os.path.join(script_dir, 'config.yaml')
+        
+    config_name = os.path.basename(config_path).replace('.yaml', '').replace('.yml', '')
+    
+    # Acquire flock to prevent concurrent executions of the same configuration
+    lock_file_path = os.path.join(script_dir, f'backup-mayster-{config_name}.lock')
     try:
         lock_file_obj = open(lock_file_path, 'w')
     except Exception as e:
@@ -360,13 +385,9 @@ def main():
     try:
         fcntl.flock(lock_file_obj, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except IOError:
-        logger.error("Another instance of backup-mayster is already running (locked). Exiting.")
+        logger.error(f"Another instance of backup-mayster for config '{config_name}' is already running (locked). Exiting.")
         sys.exit(1)
 
-    config_path = args.config
-    if not config_path:
-        config_path = os.path.join(script_dir, 'config.yaml')
-    
     config = load_config(config_path)
     validate_config(config)
     

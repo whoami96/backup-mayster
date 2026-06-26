@@ -155,7 +155,7 @@ class TestBackupMayster(unittest.TestCase):
         
         # Verify replace and directories are checked
         mock_replace.assert_called_once_with("/var/log/backup.json.tmp", "/var/log/backup.json")
-        mock_makedirs.assert_called_once_with("/var/log", exist_ok=True)
+        mock_makedirs.assert_any_call("/var/log", exist_ok=True)
         
         # Inspect what was written
         written_content = "".join(call.args[0] for call in file_handle_write.write.call_args_list)
