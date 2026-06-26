@@ -13,9 +13,10 @@ Optimized for **homelab stability, container state consistency (pausing), and me
 * **Unix-native `.tar.gz`:** Preserves file ownerships (UID/GID) and permissions, which are critical for mounting container volumes.
 * **Configurable Retention:** Automatically cleans up older archives based on a configurable age threshold (in days).
 * **Observability:** 
-  * Exposes Prometheus metrics via a lightweight custom daemon exporter (`backup-mayster-exporter.py`).
-  * Sends formatted Discord status reports (embeds).
-* **Concurrency Guard:** Unix `flock` prevention ensures multiple backup instances never overlap.
+  * Exposes Prometheus metrics via a lightweight custom daemon exporter (`backup-mayster-exporter.py`) with support for multiple servers.
+  * Sends formatted Discord status reports (embeds) tagged with the respective server name.
+* **Concurrency Guard:** Unix `flock` locking per configuration file (`backup-mayster-<config>.lock`) allows parallel runs for different hosts, while preventing concurrent duplicate execution. Writes to the metrics file are guarded with flock-based read-modify-write synchronization to prevent race conditions.
+* **Multi-Host Orchestration:** Run backups for different environments/servers independently by specifying custom configuration files using the `--config` flag.
 
 ---
 
@@ -137,12 +138,12 @@ sudo systemctl enable --now backup-mayster-exporter.service
 ```
 
 #### Exposed Metrics:
-* `backup_mayster_last_run_timestamp_seconds` — Timestamp of the last global backup run.
-* `backup_mayster_success` — Global status of the last run (1 = OK, 0 = ERR).
-* `backup_mayster_app_success{app="..."}` — Backup status per application.
-* `backup_mayster_app_duration_seconds{app="..."}` — Backup execution duration.
-* `backup_mayster_app_backup_size_bytes{app="..."}` — Generated archive file size in bytes (perfect for Grafana size trend forecasting).
-* `backup_mayster_app_last_success_timestamp_seconds{app="..."}` — Keeps track of the last successful backup timestamp per app, persisting values on failures to facilitate Alertmanager alerts:
+* `backup_mayster_last_run_timestamp_seconds{server="..."}` — Timestamp of the last global backup run per server.
+* `backup_mayster_success{server="..."}` — Global status of the last run per server (1 = OK, 0 = ERR).
+* `backup_mayster_app_success{server="...",app="..."}` — Backup status per application and server.
+* `backup_mayster_app_duration_seconds{server="...",app="..."}` — Backup execution duration.
+* `backup_mayster_app_backup_size_bytes{server="...",app="..."}` — Generated archive file size in bytes (perfect for Grafana size trend forecasting).
+* `backup_mayster_app_last_success_timestamp_seconds{server="...",app="..."}` — Keeps track of the last successful backup timestamp per app and server, persisting values on failures to facilitate Alertmanager alerts:
   `time() - backup_mayster_app_last_success_timestamp_seconds > 90000`
 
 ---

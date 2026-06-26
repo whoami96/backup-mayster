@@ -91,6 +91,7 @@ class TestBackupMayster(unittest.TestCase):
             webhook_url="https://discord.mock/webhook",
             stats=stats,
             success=False,
+            server_name="custom-test-server",
             is_dry_run=True
         )
         
@@ -104,6 +105,7 @@ class TestBackupMayster(unittest.TestCase):
         self.assertEqual(payload['username'], "Backup Mayster")
         embed = payload['embeds'][0]
         self.assertIn("[DRY RUN]", embed['title'])
+        self.assertIn("custom-test-server", embed['title'])
         self.assertIn("❌ Some backups failed!", embed['description'])
         self.assertIn("bao", embed['description'])
         self.assertIn("npm", embed['description'])

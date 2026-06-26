@@ -172,7 +172,7 @@ def format_size(size_bytes):
         size_bytes /= 1024.0
     return f"{size_bytes:.2f} PB"
 
-def send_discord_notification(webhook_url, stats, success, is_dry_run=False):
+def send_discord_notification(webhook_url, stats, success, server_name="prod-pdm-node-01", is_dry_run=False):
     """Sends a summary report to Discord via Webhook."""
     color = 3066993 if success else 15158332 # Green or Red
     status_msg = "✅ All backups completed successfully!" if success else "❌ Some backups failed!"
@@ -192,7 +192,7 @@ def send_discord_notification(webhook_url, stats, success, is_dry_run=False):
     table_lines.append("```")
     description = "\n".join(table_lines)
     
-    title = f"Backup Report - prod-pdm-node-01"
+    title = f"Backup Report - {server_name}"
     if is_dry_run:
         title = f"[DRY RUN] {title}"
         
@@ -397,6 +397,10 @@ def main():
     apps = config.get('apps', [])
     global_engine = backup_cfg.get('container_engine', 'podman')
     
+    server_name = backup_cfg.get('server_name')
+    if not server_name:
+        server_name = ssh_cfg.get('host', 'unknown-server')
+    
     # Filter apps if a specific one was requested
     if args.app:
         apps = [app for app in apps if app.get('name') == args.app]
@@ -497,6 +501,7 @@ def main():
                 discord_cfg.get('webhook_url'),
                 [{"name": "SSH Connection", "status": "FAILED", "size": "--", "duration": "0s"}],
                 success=False,
+                server_name=server_name,
                 is_dry_run=is_dry_run
             )
         sys.exit(1)
@@ -668,14 +673,11 @@ def main():
     # Send Discord notification
     if discord_cfg.get('enabled') and discord_cfg.get('webhook_url'):
         logger.info("Sending Discord notification...")
-        send_discord_notification(discord_cfg.get('webhook_url'), stats, all_success, is_dry_run=is_dry_run)
+        send_discord_notification(discord_cfg.get('webhook_url'), stats, all_success, server_name=server_name, is_dry_run=is_dry_run)
         
     # Write JSON metrics if configured
     metrics_cfg = config.get('metrics', {})
     if metrics_cfg.get('enabled') and metrics_cfg.get('stats_file'):
-        server_name = backup_cfg.get('server_name')
-        if not server_name:
-            server_name = ssh_cfg.get('host', 'unknown-server')
         write_stats_json(metrics_cfg.get('stats_file'), stats, all_success, server_name)
         
     logger.info("Backup script run finished.")
