@@ -151,7 +151,7 @@ class TestBackupMayster(unittest.TestCase):
             {"name": "npm", "status": "FAILED", "size": "--", "size_bytes": 0, "duration": "1.2s"}
         ]
         
-        backup_mayster.write_stats_json("/var/log/backup.json", stats, False)
+        backup_mayster.write_stats_json("/var/log/backup.json", stats, False, "default")
         
         # Verify replace and directories are checked
         mock_replace.assert_called_once_with("/var/log/backup.json.tmp", "/var/log/backup.json")
@@ -164,10 +164,15 @@ class TestBackupMayster(unittest.TestCase):
         import json as test_json
         written_data = test_json.loads(written_content)
         
-        self.assertEqual(written_data['success'], 0)
-        self.assertEqual(written_data['last_run_timestamp_seconds'], 1719144000.0)
+        # Assertions on nested server data
+        self.assertIn('servers', written_data)
+        self.assertIn('default', written_data['servers'])
+        server_data = written_data['servers']['default']
         
-        apps_dict = {app['name']: app for app in written_data['apps']}
+        self.assertEqual(server_data['success'], 0)
+        self.assertEqual(server_data['last_run_timestamp_seconds'], 1719144000.0)
+        
+        apps_dict = {app['name']: app for app in server_data['apps']}
         
         # Check bao (Success in current run)
         self.assertEqual(apps_dict['bao']['status'], 'OK')

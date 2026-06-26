@@ -50,41 +50,57 @@ class MetricsHandler(BaseHTTPRequestHandler):
             
         lines = []
         
-        last_run = data.get('last_run_timestamp_seconds', 0.0)
+        # Check if it is in the new multi-server format
+        servers = {}
+        if isinstance(data, dict):
+            if "servers" in data:
+                servers = data.get("servers", {})
+            elif "apps" in data:
+                # Fallback / compatibility with old single-server format
+                servers = {"default": data}
+                
+        # Generate metrics for each server
         lines.append("# HELP backup_mayster_last_run_timestamp_seconds Epoch timestamp of the last backup run.")
         lines.append("# TYPE backup_mayster_last_run_timestamp_seconds gauge")
-        lines.append(f"backup_mayster_last_run_timestamp_seconds {last_run}\n")
+        for sname, sdata in servers.items():
+            last_run = sdata.get('last_run_timestamp_seconds', 0.0)
+            lines.append(f'backup_mayster_last_run_timestamp_seconds{{server="{sname}"}} {last_run}')
+        lines.append("")
         
-        success = data.get('success', 0)
         lines.append("# HELP backup_mayster_success Status of the backup run (1 = success, 0 = failure).")
         lines.append("# TYPE backup_mayster_success gauge")
-        lines.append(f"backup_mayster_success {success}\n")
-        
-        apps = data.get('apps', [])
+        for sname, sdata in servers.items():
+            success = sdata.get('success', 0)
+            lines.append(f'backup_mayster_success{{server="{sname}"}} {success}')
+        lines.append("")
         
         lines.append("# HELP backup_mayster_app_success Status of the backup for a specific application (1 = success, 0 = failure).")
         lines.append("# TYPE backup_mayster_app_success gauge")
-        for app in apps:
-            val = 1 if app.get('status') == "OK" else 0
-            lines.append(f'backup_mayster_app_success{{app="{app.get("name")}"}} {val}')
+        for sname, sdata in servers.items():
+            for app in sdata.get('apps', []):
+                val = 1 if app.get('status') == "OK" else 0
+                lines.append(f'backup_mayster_app_success{{server="{sname}",app="{app.get("name")}"}} {val}')
         lines.append("")
         
         lines.append("# HELP backup_mayster_app_duration_seconds Duration of the backup process for a specific application in seconds.")
         lines.append("# TYPE backup_mayster_app_duration_seconds gauge")
-        for app in apps:
-            lines.append(f'backup_mayster_app_duration_seconds{{app="{app.get("name")}"}} {app.get("duration_seconds", 0.0)}')
+        for sname, sdata in servers.items():
+            for app in sdata.get('apps', []):
+                lines.append(f'backup_mayster_app_duration_seconds{{server="{sname}",app="{app.get("name")}"}} {app.get("duration_seconds", 0.0)}')
         lines.append("")
         
         lines.append("# HELP backup_mayster_app_backup_size_bytes Size of the backup archive in bytes.")
         lines.append("# TYPE backup_mayster_app_backup_size_bytes gauge")
-        for app in apps:
-            lines.append(f'backup_mayster_app_backup_size_bytes{{app="{app.get("name")}"}} {app.get("size_bytes", 0)}')
+        for sname, sdata in servers.items():
+            for app in sdata.get('apps', []):
+                lines.append(f'backup_mayster_app_backup_size_bytes{{server="{sname}",app="{app.get("name")}"}} {app.get("size_bytes", 0)}')
         lines.append("")
 
         lines.append("# HELP backup_mayster_app_last_success_timestamp_seconds Epoch timestamp of the last successful backup run for this application.")
         lines.append("# TYPE backup_mayster_app_last_success_timestamp_seconds gauge")
-        for app in apps:
-            lines.append(f'backup_mayster_app_last_success_timestamp_seconds{{app="{app.get("name")}"}} {app.get("last_success_timestamp_seconds", 0.0)}')
+        for sname, sdata in servers.items():
+            for app in sdata.get('apps', []):
+                lines.append(f'backup_mayster_app_last_success_timestamp_seconds{{server="{sname}",app="{app.get("name")}"}} {app.get("last_success_timestamp_seconds", 0.0)}')
         lines.append("")
         
         return "\n".join(lines)
