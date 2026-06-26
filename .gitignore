@@ -220,7 +220,8 @@ __marimo__/
 
 # backup-mayster configuration, logs & locks
 config.yaml
-backup-mayster.lock
+config-*.yaml
+*.lock
 backup-mayster-stats.json
 *.log
 *.tmp
