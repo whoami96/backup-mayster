@@ -641,6 +641,8 @@ def run_borg_backup(app, ssh_client, config, is_dry_run=False):
         # Add excludes if configured
         excludes = app.get('exclude', [])
         if isinstance(excludes, list):
+            if excludes:
+                rsync_cmd.append("--delete-excluded")
             for exc in excludes:
                 rsync_cmd.extend(["--exclude", str(exc)])
                 
