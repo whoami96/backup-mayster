@@ -150,6 +150,10 @@ venv/bin/python backup-mayster.py --help
   ```bash
   venv/bin/python backup-mayster.py --app my-app
   ```
+* **Verify repository integrity (Borg check):**
+  ```bash
+  venv/bin/python backup-mayster.py --check
+  ```
 
 ---
 

@@ -426,6 +426,79 @@ class TestBackupMayster(unittest.TestCase):
             self.assertEqual(result["size"], "1.00 MB")
             mock_sftp_client.get.assert_called_once()
 
+    @patch("subprocess.run")
+    @patch("os.makedirs")
+    def test_run_borg_backup_excludes(self, mock_makedirs, mock_subproc):
+        """Test that excludes are passed to rsync and borg create."""
+        with patch.object(backup_mayster, "run_ssh_command") as mock_ssh:
+            mock_ssh.return_value = (0, "ok", "")
+            
+            proc_rsync = MagicMock(returncode=0, stdout="", stderr="")
+            proc_borg_create = MagicMock(returncode=0, stdout='{"archive": {"stats": {"original_size": 100, "deduplicated_size": 10}}}', stderr="")
+            proc_borg_prune = MagicMock(returncode=0, stdout="", stderr="")
+            mock_subproc.side_effect = [proc_rsync, proc_borg_create, proc_borg_prune]
+
+            app = {
+                "name": "bao",
+                "path": "/home/whoami/containers/bao",
+                "exclude": ["*.log", "cache/"],
+                "use_sudo": False
+            }
+            config = {
+                "ssh": {"host": "prod-test", "user": "whoami"},
+                "backup": {
+                    "local_dir": "/nas_backup",
+                    "engine": "borg",
+                    "borg": {"repo_path": "/nas_backup/borg-repo"}
+                }
+            }
+            mock_ssh_client = MagicMock()
+
+            result = backup_mayster.run_borg_backup(app, mock_ssh_client, config, is_dry_run=False)
+            self.assertEqual(result["status"], "OK")
+
+            # Verify rsync call args contain excludes
+            rsync_args = mock_subproc.call_args_list[0][0][0]
+            self.assertIn("--exclude", rsync_args)
+            self.assertIn("*.log", rsync_args)
+            self.assertIn("cache/", rsync_args)
+
+            # Verify borg create call args contain excludes
+            borg_create_args = mock_subproc.call_args_list[1][0][0]
+            self.assertIn("--exclude", borg_create_args)
+            self.assertIn("*.log", borg_create_args)
+            self.assertIn("cache/", borg_create_args)
+
+    @patch("subprocess.run")
+    @patch("os.makedirs")
+    def test_run_borg_backup_lock_error(self, mock_makedirs, mock_subproc):
+        """Test that lock error in borg create is handled and reported."""
+        with patch.object(backup_mayster, "run_ssh_command") as mock_ssh:
+            mock_ssh.return_value = (0, "ok", "")
+            
+            proc_rsync = MagicMock(returncode=0, stdout="", stderr="")
+            proc_borg_create = MagicMock(returncode=2, stdout="", stderr="Failed to create/acquire the lock /nas_backup/borg-repo/lock.exclusive")
+            mock_subproc.side_effect = [proc_rsync, proc_borg_create]
+
+            app = {
+                "name": "bao",
+                "path": "/home/whoami/containers/bao",
+                "use_sudo": False
+            }
+            config = {
+                "ssh": {"host": "prod-test", "user": "whoami"},
+                "backup": {
+                    "local_dir": "/nas_backup",
+                    "engine": "borg",
+                    "borg": {"repo_path": "/nas_backup/borg-repo"}
+                }
+            }
+            mock_ssh_client = MagicMock()
+
+            result = backup_mayster.run_borg_backup(app, mock_ssh_client, config, is_dry_run=False)
+            self.assertEqual(result["status"], "FAILED")
+            self.assertIn("lock", result["error"].lower())
+
 if __name__ == "__main__":
     unittest.main()
 

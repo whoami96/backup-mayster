@@ -407,7 +407,7 @@ def run_tar_backup(app, ssh_client, sftp_client, config, is_dry_run=False):
     pre_commands = app.get('pre_backup_commands', [])
     post_commands = app.get('post_backup_commands', [])
     
-    local_dir = backup_cfg.get('local_dir')
+    local_dir = os.path.expanduser(backup_cfg.get('local_dir')) if backup_cfg.get('local_dir') else '/tmp'
     remote_temp_dir = backup_cfg.get('remote_temp_dir', '/tmp')
     try:
         retention_days = int(backup_cfg.get('retention_days') if backup_cfg.get('retention_days') is not None else 7)
@@ -580,10 +580,10 @@ def run_borg_backup(app, ssh_client, config, is_dry_run=False):
     pre_commands = app.get('pre_backup_commands', [])
     post_commands = app.get('post_backup_commands', [])
     
-    local_dir = backup_cfg.get('local_dir', '/tmp')
-    staging_dir = borg_cfg.get('staging_dir') or os.path.join(local_dir, 'staging')
+    local_dir = os.path.expanduser(backup_cfg.get('local_dir', '/tmp'))
+    staging_dir = os.path.expanduser(borg_cfg.get('staging_dir')) if borg_cfg.get('staging_dir') else os.path.join(local_dir, 'staging')
     local_app_staging = os.path.join(staging_dir, app_name)
-    repo_path = borg_cfg.get('repo_path')
+    repo_path = os.path.expanduser(borg_cfg.get('repo_path')) if borg_cfg.get('repo_path') else None
     
     start_time = time.time()
     app_success = True
@@ -629,13 +629,21 @@ def run_borg_backup(app, ssh_client, config, is_dry_run=False):
         ssh_user = ssh_cfg.get('user')
         ssh_host = ssh_cfg.get('host')
         ssh_key = ssh_cfg.get('key_path')
+        if ssh_key:
+            ssh_key = os.path.expanduser(ssh_key)
         
-        ssh_e_cmd = f"ssh -p {ssh_port} -o StrictHostKeyChecking=accept-new -o BatchMode=yes"
+        ssh_e_cmd = f"ssh -p {ssh_port} -o StrictHostKeyChecking=accept-new -o BatchMode=yes -o ConnectTimeout=15 -o ServerAliveInterval=10 -o ServerAliveCountMax=3"
         if ssh_key:
             ssh_e_cmd += f" -i {ssh_key}"
             
         rsync_cmd = ["rsync", "-az", "--delete", "-e", ssh_e_cmd]
         
+        # Add excludes if configured
+        excludes = app.get('exclude', [])
+        if isinstance(excludes, list):
+            for exc in excludes:
+                rsync_cmd.extend(["--exclude", str(exc)])
+                
         remote_rsync = app.get('rsync_path') or borg_cfg.get('rsync_path')
         if not remote_rsync and app_use_sudo:
             remote_rsync = "sudo rsync"
@@ -706,10 +714,12 @@ def run_borg_backup(app, ssh_client, config, is_dry_run=False):
             "borg", "create",
             "--compression", compression,
             "--json",
-            "--stats",
-            archive_spec,
-            app_name
+            "--stats"
         ]
+        if isinstance(excludes, list):
+            for exc in excludes:
+                borg_create_cmd.extend(["--exclude", str(exc)])
+        borg_create_cmd.extend([archive_spec, app_name])
         
         logger.info(f"Creating Borg archive '{archive_name}' in repo '{repo_path}'...")
         if is_dry_run:
@@ -727,7 +737,10 @@ def run_borg_backup(app, ssh_client, config, is_dry_run=False):
                     text=True
                 )
                 if proc.returncode != 0:
-                    raise Exception(f"Borg create failed with code {proc.returncode}: {proc.stderr.strip()}")
+                    stderr_msg = proc.stderr.strip()
+                    if "lock" in stderr_msg.lower():
+                        logger.error(f"Borg repository '{repo_path}' is locked. If no other backup process is running, you can unlock it with: borg break-lock {repo_path}")
+                    raise Exception(f"Borg create failed with code {proc.returncode}: {stderr_msg}")
                     
                 json_output = proc.stdout.strip()
                 if not json_output and proc.stderr:
@@ -758,10 +771,16 @@ def run_borg_backup(app, ssh_client, config, is_dry_run=False):
     # 7. Borg Prune
     if app_success:
         prune_cfg = borg_cfg.get('prune', {})
-        keep_daily = prune_cfg.get('keep_daily', backup_cfg.get('retention_days', 7))
+        keep_daily = prune_cfg.get('keep_daily')
+        if keep_daily is None and backup_cfg.get('retention_days') is not None:
+            keep_daily = backup_cfg.get('retention_days')
         keep_weekly = prune_cfg.get('keep_weekly')
         keep_monthly = prune_cfg.get('keep_monthly')
         keep_within = prune_cfg.get('keep_within')
+        
+        # Ensure at least one keep option is passed to avoid Borg prune error
+        if not any([keep_daily, keep_weekly, keep_monthly, keep_within]):
+            keep_daily = 7
         
         borg_prune_cmd = [
             "borg", "prune",
@@ -790,7 +809,10 @@ def run_borg_backup(app, ssh_client, config, is_dry_run=False):
                     text=True
                 )
                 if proc.returncode != 0:
-                    logger.warning(f"Borg prune returned code {proc.returncode}: {proc.stderr.strip()}")
+                    stderr_msg = proc.stderr.strip()
+                    if "lock" in stderr_msg.lower():
+                        logger.error(f"Borg repository '{repo_path}' is locked. You can unlock it with: borg break-lock {repo_path}")
+                    logger.warning(f"Borg prune returned code {proc.returncode}: {stderr_msg}")
                 else:
                     logger.info(f"Borg prune completed for {app_name}.")
             except Exception as pe:
@@ -836,6 +858,11 @@ def main():
         action='store_true',
         help="Perform a dry run. Connects and runs checks, logs actions, but does not perform pause, tar, SFTP, or retention."
     )
+    parser.add_argument(
+        '--check',
+        action='store_true',
+        help="Run 'borg check' on the repository to verify data integrity."
+    )
     args = parser.parse_args()
 
     script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -873,6 +900,32 @@ def main():
     server_name = backup_cfg.get('server_name')
     if not server_name:
         server_name = ssh_cfg.get('host', 'unknown-server')
+        
+    # Handle Borg integrity check CLI action
+    if args.check:
+        borg_cfg = backup_cfg.get('borg', {})
+        repo_path = os.path.expanduser(borg_cfg.get('repo_path')) if borg_cfg.get('repo_path') else None
+        if not repo_path:
+            logger.error("Borg repository path is not configured. Cannot perform integrity check.")
+            sys.exit(1)
+        logger.info(f"Running Borg integrity check on repo: {repo_path}...")
+        borg_env = os.environ.copy()
+        passphrase = borg_cfg.get('passphrase')
+        if passphrase is not None:
+            borg_env['BORG_PASSPHRASE'] = str(passphrase)
+        borg_env['BORG_UNKNOWN_UNENCRYPTED_REPO_ACCESS_IS_OK'] = 'yes'
+        borg_env['BORG_RELOCATED_REPO_ACCESS_IS_OK'] = 'yes'
+        try:
+            proc = subprocess.run(["borg", "check", repo_path], env=borg_env, capture_output=True, text=True)
+            if proc.returncode == 0:
+                logger.info("Borg check completed successfully. Repository is consistent and healthy.")
+                sys.exit(0)
+            else:
+                logger.error(f"Borg check detected issues (code {proc.returncode}): {proc.stderr.strip()}")
+                sys.exit(1)
+        except FileNotFoundError:
+            logger.error("borg command not found on local system. Please install borgbackup.")
+            sys.exit(1)
     
     # Filter apps if a specific one was requested
     if args.app:
@@ -915,7 +968,7 @@ def main():
         
     logger.info("Starting backup process...")
     
-    local_dir = backup_cfg.get('local_dir')
+    local_dir = os.path.expanduser(backup_cfg.get('local_dir')) if backup_cfg.get('local_dir') else '/tmp'
     remote_temp_dir = backup_cfg.get('remote_temp_dir', '/tmp')
     try:
         retention_days = int(backup_cfg.get('retention_days') if backup_cfg.get('retention_days') is not None else 7)
@@ -960,11 +1013,12 @@ def main():
         except (ValueError, TypeError):
             port_val = 22
             
+        ssh_key_path = os.path.expanduser(ssh_cfg.get('key_path')) if ssh_cfg.get('key_path') else None
         ssh_client.connect(
             hostname=ssh_cfg.get('host'),
             port=port_val,
             username=ssh_cfg.get('user'),
-            key_filename=ssh_cfg.get('key_path'),
+            key_filename=ssh_key_path,
             timeout=15
         )
         transport = ssh_client.get_transport()

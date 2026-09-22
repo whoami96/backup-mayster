@@ -55,6 +55,9 @@ apps:
     path: "/opt/containers/bao"
     pause_containers:
       - "bao"
+    exclude:
+      - "*.log"
+      - "cache/"
 
   # Example 2: Container backup with database dump (utilizing a safe temporary path for permission handling)
   - name: "npm"
