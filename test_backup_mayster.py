@@ -258,5 +258,174 @@ class TestBackupMayster(unittest.TestCase):
         mock_exit.assert_called_with(1)
         mock_exit.reset_mock()
 
+        # 8. Valid config - Borg engine
+        valid_cfg_borg = {
+            "ssh": {"host": "prod-test", "user": "mayster"},
+            "backup": {
+                "local_dir": "/backups",
+                "engine": "borg",
+                "borg": {"repo_path": "/backups/borg-repo"}
+            },
+            "apps": [{"name": "bao", "path": "/opt/bao"}]
+        }
+        backup_mayster.validate_config(valid_cfg_borg)
+        mock_exit.assert_not_called()
+
+        # 9. Invalid config - Borg engine missing borg section
+        invalid_cfg_borg_missing = {
+            "ssh": {"host": "prod-test", "user": "mayster"},
+            "backup": {"local_dir": "/backups", "engine": "borg"},
+            "apps": [{"name": "bao", "path": "/opt/bao"}]
+        }
+        backup_mayster.validate_config(invalid_cfg_borg_missing)
+        mock_exit.assert_called_with(1)
+        mock_exit.reset_mock()
+
+        # 10. Invalid config - Borg engine missing repo_path
+        invalid_cfg_borg_no_repo = {
+            "ssh": {"host": "prod-test", "user": "mayster"},
+            "backup": {
+                "local_dir": "/backups",
+                "engine": "borg",
+                "borg": {}
+            },
+            "apps": [{"name": "bao", "path": "/opt/bao"}]
+        }
+        backup_mayster.validate_config(invalid_cfg_borg_no_repo)
+        mock_exit.assert_called_with(1)
+        mock_exit.reset_mock()
+
+        # 11. Invalid config - invalid engine name
+        invalid_cfg_engine_name = {
+            "ssh": {"host": "prod-test", "user": "mayster"},
+            "backup": {"local_dir": "/backups", "engine": "invalid"},
+            "apps": [{"name": "bao", "path": "/opt/bao"}]
+        }
+        backup_mayster.validate_config(invalid_cfg_engine_name)
+        mock_exit.assert_called_with(1)
+        mock_exit.reset_mock()
+
+        # 12. Invalid config - invalid use_sudo type
+        invalid_cfg_sudo = {
+            "ssh": {"host": "prod-test", "user": "mayster"},
+            "backup": {"local_dir": "/backups", "use_sudo": "yes"},
+            "apps": [{"name": "bao", "path": "/opt/bao"}]
+        }
+        backup_mayster.validate_config(invalid_cfg_sudo)
+        mock_exit.assert_called_with(1)
+        mock_exit.reset_mock()
+
+    def test_parse_borg_json(self):
+        """Test parsing JSON output from Borg commands."""
+        # Pure JSON
+        json_str = '{"archive": {"stats": {"original_size": 1000, "deduplicated_size": 200}}}'
+        data = backup_mayster.parse_borg_json(json_str)
+        self.assertEqual(data["archive"]["stats"]["original_size"], 1000)
+        self.assertEqual(data["archive"]["stats"]["deduplicated_size"], 200)
+
+        # JSON wrapped in log messages
+        wrapped = "Warning: Some warning\n" + json_str + "\nTerminating."
+        data2 = backup_mayster.parse_borg_json(wrapped)
+        self.assertEqual(data2["archive"]["stats"]["original_size"], 1000)
+
+    @patch("subprocess.run")
+    @patch("os.makedirs")
+    def test_run_borg_backup_success(self, mock_makedirs, mock_subproc):
+        """Test successful execution of run_borg_backup."""
+        with patch.object(backup_mayster, "run_ssh_command") as mock_ssh:
+            mock_ssh.return_value = (0, "ok", "")
+            
+            # Mock subprocess responses: 1 for rsync, 1 for borg create, 1 for borg prune
+            borg_json = (
+                '{\n'
+                '  "archive": {\n'
+                '    "stats": {\n'
+                '      "original_size": 15728640,\n'
+                '      "compressed_size": 5242880,\n'
+                '      "deduplicated_size": 1048576\n'
+                '    }\n'
+                '  }\n'
+                '}'
+            )
+            proc_rsync = MagicMock(returncode=0, stdout="", stderr="")
+            proc_borg_create = MagicMock(returncode=0, stdout=borg_json, stderr="")
+            proc_borg_prune = MagicMock(returncode=0, stdout="", stderr="")
+            mock_subproc.side_effect = [proc_rsync, proc_borg_create, proc_borg_prune]
+
+            app = {
+                "name": "bao",
+                "path": "/home/whoami/containers/bao",
+                "pause_containers": ["bao"],
+                "pre_backup_commands": ["echo pre"],
+                "post_backup_commands": ["echo post"],
+                "use_sudo": False
+            }
+            config = {
+                "ssh": {"host": "prod-test", "user": "whoami", "port": 22552, "key_path": "/key"},
+                "backup": {
+                    "local_dir": "/nas_backup",
+                    "engine": "borg",
+                    "use_sudo": False,
+                    "borg": {
+                        "repo_path": "/nas_backup/borg-repo",
+                        "staging_dir": "/nas_backup/staging",
+                        "compression": "zstd,3",
+                        "prune": {"keep_daily": 7}
+                    }
+                }
+            }
+            mock_ssh_client = MagicMock()
+
+            result = backup_mayster.run_borg_backup(app, mock_ssh_client, config, is_dry_run=False)
+
+            self.assertEqual(result["name"], "bao")
+            self.assertEqual(result["status"], "OK")
+            self.assertEqual(result["size_bytes"], 15728640)
+            self.assertEqual(result["dedup_size_bytes"], 1048576)
+            self.assertIn("15.00 MB", result["size"])
+            self.assertIn("1.00 MB", result["size"])
+
+            # Check SSH calls: pre-command, pause (without sudo because use_sudo=False), unpause, post-command
+            ssh_cmds = [call.args[1] for call in mock_ssh.call_args_list]
+            self.assertIn("echo pre", ssh_cmds)
+            self.assertIn("podman pause bao", ssh_cmds)
+            self.assertIn("podman unpause bao", ssh_cmds)
+            self.assertIn("echo post", ssh_cmds)
+
+    @patch("os.path.getsize")
+    @patch("os.makedirs")
+    def test_run_tar_backup_success(self, mock_makedirs, mock_getsize):
+        """Test successful execution of run_tar_backup."""
+        with patch.object(backup_mayster, "run_ssh_command") as mock_ssh, \
+             patch.object(backup_mayster, "run_retention") as mock_retention:
+            mock_ssh.return_value = (0, "ok", "")
+            mock_getsize.return_value = 1048576
+            mock_retention.return_value = []
+
+            app = {
+                "name": "bao",
+                "path": "/opt/containers/bao",
+                "pause_containers": ["bao"]
+            }
+            config = {
+                "ssh": {"host": "prod-test", "user": "mayster"},
+                "backup": {
+                    "local_dir": "/nas_backup",
+                    "engine": "tar",
+                    "use_sudo": True
+                }
+            }
+            mock_ssh_client = MagicMock()
+            mock_sftp_client = MagicMock()
+
+            result = backup_mayster.run_tar_backup(app, mock_ssh_client, mock_sftp_client, config, is_dry_run=False)
+
+            self.assertEqual(result["name"], "bao")
+            self.assertEqual(result["status"], "OK")
+            self.assertEqual(result["size_bytes"], 1048576)
+            self.assertEqual(result["size"], "1.00 MB")
+            mock_sftp_client.get.assert_called_once()
+
 if __name__ == "__main__":
     unittest.main()
+

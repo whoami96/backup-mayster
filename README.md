@@ -7,14 +7,17 @@ Optimized for **homelab stability, container state consistency (pausing), and me
 
 ## 🛠️ Features
 
+* **Dual Backup Engines:**
+  * **BorgBackup (`engine: "borg"`, Recommended):** Block-level deduplication, Zstandard/LZ4 compression, repository encryption, and granular retention policies (`keep_daily`, `keep_weekly`, `keep_monthly`).
+  * **Tarball (`engine: "tar"`, Legacy):** Standalone `.tar.gz` archives transferred via SFTP.
 * **Pull-Based Security:** The script runs on the backup target (NAS/local server) and pulls backups from production. The production server has zero access to your backup storage.
-* **Database & State Consistency:** Containers are paused using `podman pause` / `unpause` during archiving to prevent dirty reads or database file corruption without container restarts (zero downtime).
+* **Minimal Downtime (Rsync Staging):** In Borg mode, data is synced via `rsync` while containers are briefly paused (`podman pause`), and containers are unpaused immediately before Borg deduplication and archiving take place locally on the NAS.
+* **Rootless Podman & Docker Support:** Configurable `use_sudo` (globally or per application) seamlessly accommodates Rootless Podman setups without requiring root/sudo permissions.
+* **Database & State Consistency:** Containers are paused using `podman pause` / `unpause` during data capture to prevent dirty reads or database file corruption.
 * **Pre/Post Executions:** Run custom commands (like `mariadb-dump` or `pg_dump` inside containers) before packaging and clean them up after archiving.
-* **Unix-native `.tar.gz`:** Preserves file ownerships (UID/GID) and permissions, which are critical for mounting container volumes.
-* **Configurable Retention:** Automatically cleans up older archives based on a configurable age threshold (in days).
 * **Observability:** 
   * Exposes Prometheus metrics via a lightweight custom daemon exporter (`backup-mayster-exporter.py`) with support for multiple servers.
-  * Sends formatted Discord status reports (embeds) tagged with the respective server name.
+  * Sends formatted Discord status reports (embeds) with original and deduplicated backup sizes.
 * **Concurrency Guard:** Unix `flock` locking per configuration file (`backup-mayster-<config>.lock`) allows parallel runs for different hosts, while preventing concurrent duplicate execution. Writes to the metrics file are guarded with flock-based read-modify-write synchronization to prevent race conditions.
 * **Multi-Host Orchestration:** Run backups for different environments/servers independently by specifying custom configuration files using the `--config` flag.
 
@@ -61,6 +64,16 @@ sudo mkdir -p /var/log/backup-mayster
 sudo chown -R backup-user:backup-user /var/log/backup-mayster
 ```
 
+#### Borg Repository Initialization (When using Borg engine)
+If using `engine: "borg"`, initialize the Borg repository on your backup server before running backups:
+```bash
+# For unencrypted repository (e.g. on a secure local NAS):
+borg init --encryption=none /path/to/backup/destination/borg-repo
+
+# OR with encryption (requires passphrase in config.yaml or BORG_PASSPHRASE env):
+borg init --encryption=repokey /path/to/backup/destination/borg-repo
+```
+
 #### Configuration (`config.yaml`)
 Create and edit `config.yaml` in the script directory:
 ```yaml
@@ -71,14 +84,32 @@ ssh:
   key_path: "~/.ssh/id_rsa"
 
 backup:
+  # Backup engine: "borg" (recommended: deduplication, encryption) or "tar" (legacy tarball)
+  engine: "borg"
   local_dir: "/path/to/backup/destination"
+  use_sudo: false # Set to false for Rootless Podman or unprivileged execution
+  
+  # Borg configuration (used when engine: "borg")
+  borg:
+    repo_path: "/path/to/backup/destination/borg-repo"
+    staging_dir: "/path/to/backup/destination/staging" # Optional, defaults to local_dir/staging
+    passphrase: "" # Optional Borg repo passphrase
+    compression: "zstd,3" # Compression algorithm (zstd,3, lz4, auto,zstd, none)
+    compact: true # Automatically runs 'borg compact' to free disk space after prune
+    prune:
+      keep_daily: 7
+      keep_weekly: 4
+      keep_monthly: 6
+
+  # Tar engine options (used when engine: "tar")
   remote_temp_dir: "/tmp"
   retention_days: 7
-  log_file: "/var/log/backup-mayster/backup-mayster-stats.log"
   sftp_max_retries: 3
   sftp_retry_delay: 5
+
   container_engine: "podman" # Options: "podman" or "docker" (defaults to "podman")
   server_name: "prod-server"  # Unique label to identify this server in metrics
+  log_file: "/var/log/backup-mayster/backup-mayster.log"
 
 metrics:
   enabled: true
@@ -91,14 +122,14 @@ discord:
 apps:
   - name: "my-app"
     path: "/opt/containers/my-app"
-    container_engine: "docker" # Optional: Override engine per app ("docker" or "podman")
+    use_sudo: false # Optional per-app override
     pause_containers:
       - "my-app-container"
     pre_backup_commands:
       # Optional: Dump DB inside container before zipping
-      - "sudo podman exec my-app-db sh -c 'exec mariadb-dump -uroot -p\"$MYSQL_ROOT_PASSWORD\" --all-databases' > /opt/containers/my-app/db_dump.sql"
+      - "podman exec my-app-db sh -c 'exec mariadb-dump -uroot -p\"$MYSQL_ROOT_PASSWORD\" --all-databases' > /opt/containers/my-app/db_dump.sql"
     post_backup_commands:
-      - "sudo rm -f /opt/containers/my-app/db_dump.sql"
+      - "rm -f /opt/containers/my-app/db_dump.sql"
 ```
 
 ---
@@ -150,14 +181,46 @@ sudo systemctl enable --now backup-mayster-exporter.service
 
 ## 🔄 Restore Guide
 
-To restore an application container state on your production node:
+### Option A: Restoring from BorgBackup (Recommended)
 
-### 1. Copy the archive to production:
+#### 1. List available archives in repository:
+```bash
+borg list /path/to/backup/destination/borg-repo
+# or filter by app:
+borg list /path/to/backup/destination/borg-repo --prefix my-app_
+```
+
+#### 2. Extract files:
+You can extract files directly from the Borg repository on the backup host:
+```bash
+# Extract the archive into a temporary restore directory:
+mkdir -p /tmp/restore && cd /tmp/restore
+borg extract /path/to/backup/destination/borg-repo::my-app_20260922_120000
+
+# Or extract a single file/directory:
+borg extract /path/to/backup/destination/borg-repo::my-app_20260922_120000 my-app/docker-compose.yml
+```
+
+#### 3. Push restored files back to production:
+```bash
+rsync -az --delete /tmp/restore/my-app/ backup-user@prod-server:/opt/containers/my-app/
+```
+
+#### 4. Restart containers on production:
+```bash
+ssh backup-user@prod-server "cd /opt/containers/my-app && podman-compose up -d"
+```
+
+---
+
+### Option B: Restoring from Tarball Archive (Legacy)
+
+#### 1. Copy the archive to production:
 ```bash
 scp /path/to/backup/destination/my-app/my-app_20260623_161530.tar.gz backup-user@prod-server:/tmp/
 ```
 
-### 2. Extract and restore:
+#### 2. Extract and restore:
 Log in to production, stop the target containers, extract (preserving Unix permissions/owners via `-p`), and run compose:
 ```bash
 ssh backup-user@prod-server
