@@ -8,15 +8,38 @@ ssh:
   key_path: "/home/backup-user/.ssh/id_rsa"
 
 backup:
-  # Destination directory on the backup server (NAS) where archives will be stored
+  # Backup engine: "borg" (recommended: deduplicated, compressed, encrypted) or "tar" (legacy tar.gz)
+  engine: "borg"
+  
+  # Destination directory on the backup server (NAS)
   local_dir: "/path/to/backup/destination"
+  
+  # Set to false if using rootless Podman or remote user doesn't require sudo
+  use_sudo: true
+  
+  # BorgBackup configuration (required when engine is "borg")
+  borg:
+    repo_path: "/path/to/backup/destination/borg-repo"
+    staging_dir: "/path/to/backup/destination/staging" # Optional, defaults to local_dir/staging
+    passphrase: "" # Optional Borg repo passphrase (or set BORG_PASSPHRASE env var)
+    compression: "zstd,3" # Options: "zstd,3", "lz4", "auto,zstd", "none" (defaults to "zstd,3")
+    compact: true # Automatically reclaim disk space with 'borg compact' after run (defaults to true)
+    prune:
+      keep_daily: 7
+      keep_weekly: 4
+      keep_monthly: 6
+      # keep_within: "14d"
+
+  # Tar engine options (used when engine is "tar")
   remote_temp_dir: "/tmp"
   retention_days: 7
-  log_file: "/var/log/backup-mayster/backup-mayster.log"
   sftp_max_retries: 3
   sftp_retry_delay: 5
+
+  # General settings
   container_engine: "podman" # Options: "podman" or "docker" (defaults to "podman")
   server_name: "prod-server"  # Unique label to identify this server in Prometheus metrics
+  log_file: "/var/log/backup-mayster/backup-mayster.log"
 
 metrics:
   enabled: false # Set to true to write JSON stats for the exporter
@@ -32,6 +55,9 @@ apps:
     path: "/opt/containers/bao"
     pause_containers:
       - "bao"
+    exclude:
+      - "*.log"
+      - "cache/"
 
   # Example 2: Container backup with database dump (utilizing a safe temporary path for permission handling)
   - name: "npm"
